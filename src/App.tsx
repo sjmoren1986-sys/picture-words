@@ -1,11 +1,36 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { words } from './words'
+import { moments } from './moments'
 import { deleteWordImage, getAllWordImages, saveWordImage } from './imageStore'
 
 type Status = 'known' | 'review'
 type Progress = Record<string, Status>
 
 const storageKey = 'picture-words-progress-v1'
+
+function selectAmericanVoice(voices: SpeechSynthesisVoice[]) {
+  const americanVoices = voices.filter((voice) => /^en[-_]US$/i.test(voice.lang))
+  const candidates = americanVoices.length
+    ? americanVoices
+    : voices.filter((voice) => /^en([-_]|$)/i.test(voice.lang))
+
+  const preferredNames = [
+    'google us english', 'google english (united states)',
+    'natural', 'ava', 'aria', 'jenny', 'guy', 'andrew',
+    'emma', 'brian', 'samantha',
+  ]
+
+  return [...candidates].sort((left, right) => {
+    const score = (voice: SpeechSynthesisVoice) => {
+      const name = voice.name.toLowerCase()
+      const preference = preferredNames.findIndex((item) => name.includes(item))
+      return (preference < 0 ? 0 : 100 - preference * 5)
+        + (/^en[-_]US$/i.test(voice.lang) ? 30 : 0)
+        + (voice.localService ? 3 : 0)
+    }
+    return score(right) - score(left)
+  })[0]
+}
 
 function loadProgress(): Progress {
   try { return JSON.parse(localStorage.getItem(storageKey) ?? '{}') }
@@ -20,11 +45,26 @@ export default function App() {
   const [customImages, setCustomImages] = useState<Record<string, string>>({})
   const [notice, setNotice] = useState('')
   const firstWord = useRef(true)
+  const americanVoice = useRef<SpeechSynthesisVoice | null>(null)
   const current = words[index]
+  const currentMoment = moments[index % moments.length]
   const learned = useMemo(() => Object.values(progress).filter((value) => value === 'known').length, [progress])
 
   useEffect(() => localStorage.setItem(storageKey, JSON.stringify(progress)), [progress])
-  useEffect(() => () => speechSynthesis.cancel(), [])
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return
+
+    const loadVoice = () => {
+      americanVoice.current = selectAmericanVoice(speechSynthesis.getVoices()) ?? null
+    }
+
+    loadVoice()
+    speechSynthesis.addEventListener('voiceschanged', loadVoice)
+    return () => {
+      speechSynthesis.removeEventListener('voiceschanged', loadVoice)
+      speechSynthesis.cancel()
+    }
+  }, [])
   useEffect(() => {
     let active = true
     getAllWordImages().then((images) => {
@@ -42,13 +82,15 @@ export default function App() {
     return next
   })
 
-  const speak = (text = current.word) => {
+  const speak = (text = current.word, kind: 'word' | 'sentence' = 'word') => {
     if (!('speechSynthesis' in window)) return
     speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.lang = 'en-US'
-    utterance.rate = 0.82
-    const voice = speechSynthesis.getVoices().find((item) => item.lang.startsWith('en'))
+    utterance.rate = kind === 'word' ? 0.78 : 0.92
+    utterance.pitch = 1
+    utterance.volume = 1
+    const voice = americanVoice.current ?? selectAmericanVoice(speechSynthesis.getVoices())
     if (voice) utterance.voice = voice
     utterance.onstart = () => setSpeaking(true)
     utterance.onend = () => setSpeaking(false)
@@ -100,7 +142,11 @@ export default function App() {
       </header>
 
       <section className="hero-copy">
-        <div><p className="eyebrow">TODAY'S ADVENTURE</p><h1>看见图片，<em>记住单词。</em></h1></div>
+        <div className="english-moment" key={current.id}>
+          <p className="eyebrow">ENGLISH MOMENT · {String(index + 1).padStart(2, '0')}</p>
+          <blockquote>{currentMoment.english}</blockquote>
+          <p className="moment-translation">{currentMoment.chinese}</p>
+        </div>
         <div className="progress-wrap">
           <span>今日进度</span><strong>{learned} / {words.length}</strong>
           <div className="progress-track"><i style={{ width: `${learned / words.length * 100}%` }} /></div>
@@ -122,7 +168,11 @@ export default function App() {
               <button className={speaking ? 'sound speaking' : 'sound'} onClick={() => speak()} aria-label={`播放 ${current.word} 的发音`}>♪<span>{speaking ? '播放中' : '听发音'}</span></button>
             </div>
             <div className="meaning"><span>中文</span><strong>{current.meaning}</strong></div>
-            <button className="example" onClick={() => speak(current.example)}><span>例句</span><p>{current.example}</p><i>♪</i></button>
+            <button className="example" onClick={() => speak(current.example, 'sentence')}>
+              <span>例句</span>
+              <span className="example-copy"><p>{current.example}</p><small>{current.exampleMeaning}</small></span>
+              <i>♪</i>
+            </button>
             <div className="actions">
               <button className={progress[current.id] === 'review' ? 'review active' : 'review'} onClick={() => mark('review')}><span>↻</span>还要复习</button>
               <button className={progress[current.id] === 'known' ? 'known active' : 'known'} onClick={() => mark('known')}><span>✓</span>我认识了</button>
